@@ -9,19 +9,18 @@ st.set_page_config(
 )
 
 
-# --- 資料庫初始化 (含強健防呆與自動補償機制) ---
+# --- 資料庫初始化 ---
 def init_db():
   conn = sqlite3.connect("pantry.db")
   c = conn.cursor()
 
-  # 1. 分類表 (確保 name 欄位有 UNIQUE 約束)
+  # 1. 分類表
   c.execute("""
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE
         )
     """)
-
   default_cats = ["調味料", "冷凍肉品", "零食", "生鮮", "主食", "飲料", "其他"]
   for cat in default_cats:
     try:
@@ -46,7 +45,7 @@ def init_db():
         )
     """)
 
-  # 3. 批次庫存 (含 current_weight)
+  # 3. 批次庫存
   c.execute("""
         CREATE TABLE IF NOT EXISTS inventory_batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +64,6 @@ def init_db():
         )
     """)
 
-  # 防呆：自動補上可能缺少的欄位
   try:
     c.execute("ALTER TABLE inventory_batches ADD COLUMN purchase_date TEXT DEFAULT ''")
   except sqlite3.OperationalError:
@@ -94,7 +92,7 @@ def init_db():
         )
     """)
 
-  # 6. 使用者資料表 (多人支援)
+  # 6. 使用者資料表
   c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,7 +106,7 @@ def init_db():
         )
     """)
 
-  # 7. 每日飲食紀錄表 (減脂打卡)
+  # 7. 每日飲食紀錄表
   c.execute("""
         CREATE TABLE IF NOT EXISTS daily_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,16 +123,16 @@ def init_db():
         )
     """)
 
-  # 預設建立一個預設成員（如果完全沒有人）
-  c.execute("SELECT COUNT(*) FROM users")
-  if c.fetchone()[0] == 0:
-    c.execute(
-        """
-            INSERT INTO users (name, gender, age, height, weight, activity_level, goal_deficit)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        ("預設成員", "男", 30, 175.0, 70.0, 1.2, 400.0),
-    )
+  # 8. 體重歷史紀錄表 (支援動態 TDEE)
+  c.execute("""
+        CREATE TABLE IF NOT EXISTS weight_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            log_date TEXT NOT NULL,
+            weight REAL NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    """)
 
   conn.commit()
   conn.close()
@@ -181,7 +179,6 @@ def get_categories():
     return ["調味料", "冷凍肉品", "零食", "生鮮", "主食", "飲料", "其他"]
 
 
-# --- 日期防呆解析函式 ---
 def check_expiry(date_str):
   if not date_str or str(date_str).strip() in ["", "None", "NaT"]:
     return "未知"
@@ -199,7 +196,7 @@ def check_expiry(date_str):
     return "未知"
 
 
-# --- 側邊欄全域設定：選擇目前操作的使用者 ---
+# --- 側邊欄全域設定 ---
 st.sidebar.title("🍎 糧倉與減脂筆記")
 
 try:
@@ -209,22 +206,16 @@ try:
 except Exception:
   users_df = pd.DataFrame()
 
-if not users_df.empty:
+if users_df.empty:
+  st.sidebar.warning("⚠️ 目前無任何成員資料！請先至下方功能選單的【👥 成員管理與目標設定】建立您的個人資料。")
+  current_user_id = None
+  selected_user_name = None
+  current_user_row = None
+else:
   user_names = users_df["name"].tolist()
   selected_user_name = st.sidebar.selectbox("👤 目前操作成員", user_names)
   current_user_row = users_df[users_df["name"] == selected_user_name].iloc[0]
   current_user_id = current_user_row["id"]
-else:
-  current_user_id = 1
-  selected_user_name = "預設成員"
-  current_user_row = pd.Series({
-      "gender": "男",
-      "age": 30,
-      "height": 175.0,
-      "weight": 70.0,
-      "activity_level": 1.2,
-      "goal_deficit": 400.0,
-  })
 
 st.sidebar.markdown("---")
 menu = st.sidebar.selectbox(
@@ -236,11 +227,11 @@ menu = st.sidebar.selectbox(
         "🏷️ 食品主檔管理",
         "📥 新增購買批次 (快速入庫)",
         "📋 菜單、烹飪與冰箱推薦",
+        "🛒 智能自動補貨清單",
         "🛒 支出分析、預算與比價",
     ],
 )
 
-# 側邊欄：管理自訂分類
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏷️ 分類管理")
 new_cat_input = st.sidebar.text_input("新增自訂分類")
@@ -267,9 +258,9 @@ current_cats = get_categories()
 # --- 功能一：成員管理與目標設定 ---
 if menu == "👥 成員管理與目標設定":
   st.header("👥 家庭成員與減脂目標設定")
-  st.markdown("在此新增成員或調整每個人的身體數據，系統會自動計算減脂建議熱量！")
+  st.markdown("在此新增成員或調整身體數據，記錄體重時系統將自動連動更新 TDEE！")
 
-  tab_m1, tab_m2 = st.tabs(["➕ 新增成員", "✏️ 編輯現有成員身體數據"])
+  tab_m1, tab_m2, tab_m3 = st.tabs(["➕ 新增成員", "✏️ 編輯現有成員身體數據", "📈 記錄今日體重 (動態更新 TDEE)"])
 
   with tab_m1:
     with st.form("add_user_form", clear_on_submit=True):
@@ -354,250 +345,275 @@ if menu == "👥 成員管理與目標設定":
           except Exception as e:
             st.error(f"更新失敗: {e}")
 
+  with tab_m3:
+    if users_df.empty:
+      st.info("請先新增成員。")
+    else:
+      with st.form("weight_log_form", clear_on_submit=True):
+        w_date = st.date_input("記錄日期", datetime.date.today())
+        new_w = st.number_input("今日量測體重 (kg)", min_value=20.0, max_value=300.0, value=float(users_df.iloc[0]["weight"] or 65.0))
+        sub_w_log = st.form_submit_button("儲存體重並自動更新 TDEE")
+        if sub_w_log:
+          try:
+            conn = sqlite3.connect("pantry.db")
+            c = conn.cursor()
+            # 1. 寫入體重歷史紀錄
+            c.execute(
+                "INSERT INTO weight_logs (user_id, log_date, weight) VALUES (?, ?, ?)",
+                (current_user_id, str(w_date), new_w)
+            )
+            # 2. 同步更新使用者的當前體重（動態 TDEE 連動）
+            c.execute("UPDATE users SET weight = ? WHERE id = ?", (new_w, current_user_id))
+            conn.commit()
+            conn.close()
+            st.success(f"成功記錄體重 {new_w} kg！TDEE 與減脂建議熱量已自動重新計算！")
+            st.rerun()
+          except Exception as e:
+            st.error(f"記錄失敗: {e}")
+
 
 # --- 功能二：每日飲食打卡與減脂儀表板 ---
 elif menu == "🔥 每日飲食打卡與減脂儀表板":
-  st.header(f"🔥 【{selected_user_name}】的每日飲食打卡與減脂儀表板")
-
-  gender = current_user_row["gender"]
-  weight = float(current_user_row["weight"])
-  height = float(current_user_row["height"])
-  age = int(current_user_row["age"])
-  activity = float(current_user_row["activity_level"])
-  deficit = float(current_user_row["goal_deficit"])
-
-  # 基礎代謝率 (Mifflin-St Jeor 公式)
-  if gender == "男":
-    bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+  if users_df.empty:
+    st.warning("⚠️ 請先至【👥 成員管理與目標設定】建立成員，才能使用飲食打卡與減脂儀表板！")
   else:
-    bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+    st.header(f"🔥 【{selected_user_name}】的每日飲食打卡與減脂儀表板")
 
-  tdee = bmr * activity
-  target_calories = max(tdee - deficit, 1200)
-  target_protein = weight * 1.8
+    gender = current_user_row["gender"]
+    weight = float(current_user_row["weight"])
+    height = float(current_user_row["height"])
+    age = int(current_user_row["age"])
+    activity = float(current_user_row["activity_level"])
+    deficit = float(current_user_row["goal_deficit"])
 
-  col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
-  col_sum1.metric("基礎代謝 (BMR)", f"{bmr:.0f} 大卡")
-  col_sum2.metric("每日總消耗 (TDEE)", f"{tdee:.0f} 大卡")
-  col_sum3.metric("🎯 減脂建議熱量上限", f"{target_calories:.0f} 大卡")
-  col_sum4.metric("🎯 建議蛋白質目標", f"{target_protein:.1f} g")
-
-  st.markdown("---")
-
-  selected_log_date = st.date_input("選擇打卡日期", datetime.date.today())
-  date_str = str(selected_log_date)
-
-  try:
-    conn = sqlite3.connect("pantry.db")
-    logs_df = pd.read_sql_query(
-        "SELECT * FROM daily_logs WHERE user_id = ? AND log_date = ?", conn, params=(current_user_id, date_str)
-    )
-    recipes_df = pd.read_sql_query("SELECT id, title, ingredients_detail FROM recipes", conn)
-    cat_df = pd.read_sql_query("SELECT id, name, calories, protein, fat, carbs FROM food_catalog", conn)
-    conn.close()
-  except Exception:
-    logs_df = pd.DataFrame()
-    recipes_df = pd.DataFrame()
-    cat_df = pd.DataFrame()
-
-  total_cal_consumed = logs_df["calories"].sum() if not logs_df.empty and "calories" in logs_df else 0.0
-  total_pro_consumed = logs_df["protein"].sum() if not logs_df.empty and "protein" in logs_df else 0.0
-  total_fat_consumed = logs_df["fat"].sum() if not logs_df.empty and "fat" in logs_df else 0.0
-  total_carbs_consumed = logs_df["carbs"].sum() if not logs_df.empty and "carbs" in logs_df else 0.0
-
-  st.subheader(f"📊 {date_str} 營養攝取進度")
-  c_p1, c_p2 = st.columns(2)
-  with c_p1:
-    st.markdown(f"**熱量攝取：{total_cal_consumed:.1f} / {target_calories:.0f} 大卡**")
-    cal_pct = total_cal_consumed / target_calories if target_calories > 0 else 0
-    st.progress(min(cal_pct, 1.0))
-    if total_cal_consumed > target_calories:
-      st.warning("⚠️ 今日熱量已超過減脂目標上限！")
+    if gender == "男":
+      bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
     else:
-      st.success(f"🟢 距離減脂熱量上限還有：{target_calories - total_cal_consumed:.1f} 大卡")
+      bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
 
-  with c_p2:
-    st.markdown(f"**蛋白質攝取：{total_pro_consumed:.1f} / {target_protein:.1f} g**")
-    pro_pct = total_pro_consumed / target_protein if target_protein > 0 else 0
-    st.progress(min(pro_pct, 1.0))
-    st.info(f"💪 碳水: {total_carbs_consumed:.1f}g | 脂肪: {total_fat_consumed:.1f}g")
+    tdee = bmr * activity
+    target_calories = max(tdee - deficit, 1200)
+    target_protein = weight * 1.8
 
-  st.markdown("---")
-  st.subheader("➕ 新增今日飲食打卡")
+    col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+    col_sum1.metric("基礎代謝 (BMR)", f"{bmr:.0f} 大卡")
+    col_sum2.metric("每日總消耗 (TDEE)", f"{tdee:.0f} 大卡")
+    col_sum3.metric("🎯 減脂建議熱量上限", f"{target_calories:.0f} 大卡")
+    col_sum4.metric("🎯 建議蛋白質目標", f"{target_protein:.1f} g")
 
-  tab_log1, tab_log2, tab_log3 = st.tabs(["🍳 從智慧菜單匯入", "🥫 從現成食品主檔直接選取 (自動扣庫存)", "✍️ 自訂/外食手動輸入"])
+    st.markdown("---")
 
-  with tab_log1:
-    if recipes_df.empty:
-      st.info("目前還沒有建立任何菜單！")
-    else:
-      with st.form("log_recipe_form", clear_on_submit=True):
-        meal_type = st.selectbox("餐別", ["早餐", "午餐", "晚餐", "點心"], key="meal_r")
-        selected_recipe_title = st.selectbox("選擇菜單", recipes_df["title"].tolist())
-        
-        sub_log_recipe = st.form_submit_button("匯入此菜單營養至今日打卡")
-        if sub_log_recipe:
-          r_row = recipes_df[recipes_df["title"] == selected_recipe_title].iloc[0]
-          details = r_row["ingredients_detail"]
+    selected_log_date = st.date_input("選擇打卡日期", datetime.date.today())
+    date_str = str(selected_log_date)
+
+    try:
+      conn = sqlite3.connect("pantry.db")
+      logs_df = pd.read_sql_query(
+          "SELECT * FROM daily_logs WHERE user_id = ? AND log_date = ?", conn, params=(current_user_id, date_str)
+      )
+      recipes_df = pd.read_sql_query("SELECT id, title, ingredients_detail FROM recipes", conn)
+      cat_df = pd.read_sql_query("SELECT id, name, calories, protein, fat, carbs FROM food_catalog", conn)
+      conn.close()
+    except Exception:
+      logs_df = pd.DataFrame()
+      recipes_df = pd.DataFrame()
+      cat_df = pd.DataFrame()
+
+    total_cal_consumed = logs_df["calories"].sum() if not logs_df.empty and "calories" in logs_df else 0.0
+    total_pro_consumed = logs_df["protein"].sum() if not logs_df.empty and "protein" in logs_df else 0.0
+    total_fat_consumed = logs_df["fat"].sum() if not logs_df.empty and "fat" in logs_df else 0.0
+    total_carbs_consumed = logs_df["carbs"].sum() if not logs_df.empty and "carbs" in logs_df else 0.0
+
+    st.subheader(f"📊 {date_str} 營養攝取進度")
+    c_p1, c_p2 = st.columns(2)
+    with c_p1:
+      st.markdown(f"**熱量攝取：{total_cal_consumed:.1f} / {target_calories:.0f} 大卡**")
+      cal_pct = total_cal_consumed / target_calories if target_calories > 0 else 0
+      st.progress(min(cal_pct, 1.0))
+      if total_cal_consumed > target_calories:
+        st.warning("⚠️ 今日熱量已超過減脂目標上限！")
+      else:
+        st.success(f"🟢 距離減脂熱量上限還有：{target_calories - total_cal_consumed:.1f} 大卡")
+
+    with c_p2:
+      st.markdown(f"**蛋白質攝取：{total_pro_consumed:.1f} / {target_protein:.1f} g**")
+      pro_pct = total_pro_consumed / target_protein if target_protein > 0 else 0
+      st.progress(min(pro_pct, 1.0))
+      st.info(f"💪 碳水: {total_carbs_consumed:.1f}g | 脂肪: {total_fat_consumed:.1f}g")
+
+    st.markdown("---")
+    st.subheader("➕ 新增今日飲食打卡")
+
+    tab_log1, tab_log2, tab_log3 = st.tabs(["🍳 從智慧菜單匯入", "🥫 從現成食品主檔直接選取 (自動扣庫存)", "✍️ 自訂/外食手動輸入"])
+
+    with tab_log1:
+      if recipes_df.empty:
+        st.info("目前還沒有建立任何菜單！")
+      else:
+        with st.form("log_recipe_form", clear_on_submit=True):
+          meal_type = st.selectbox("餐別", ["早餐", "午餐", "晚餐", "點心"], key="meal_r")
+          selected_recipe_title = st.selectbox("選擇菜單", recipes_df["title"].tolist())
           
-          r_cal, r_pro, r_fat, r_carbs = 0.0, 0.0, 0.0, 0.0
-          if details:
+          sub_log_recipe = st.form_submit_button("匯入此菜單營養至今日打卡")
+          if sub_log_recipe:
+            r_row = recipes_df[recipes_df["title"] == selected_recipe_title].iloc[0]
+            details = r_row["ingredients_detail"]
+            
+            r_cal, r_pro, r_fat, r_carbs = 0.0, 0.0, 0.0, 0.0
+            if details:
+              try:
+                conn = sqlite3.connect("pantry.db")
+                full_c_df = pd.read_sql_query("SELECT * FROM food_catalog", conn)
+                conn.close()
+                
+                for item in details.split(","):
+                  if ":" in item:
+                    fname, famt_str = item.split(":")
+                    famt = float(famt_str)
+                    m = full_c_df[full_c_df["name"] == fname]
+                    if not m.empty:
+                      r_cal += (float(m["calories"].values[0] or 0) / 100.0) * famt
+                      r_pro += (float(m["protein"].values[0] or 0) / 100.0) * famt
+                      r_fat += (float(m["fat"].values[0] or 0) / 100.0) * famt
+                      r_carbs += (float(m["carbs"].values[0] or 0) / 100.0) * famt
+              except Exception:
+                pass
+
             try:
               conn = sqlite3.connect("pantry.db")
-              full_c_df = pd.read_sql_query("SELECT * FROM food_catalog", conn)
+              c = conn.cursor()
+              c.execute(
+                  """
+                      INSERT INTO daily_logs (user_id, log_date, meal_type, food_name, weight, calories, protein, fat, carbs)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  """,
+                  (current_user_id, date_str, meal_type, f"[菜單] {selected_recipe_title}", 0.0, r_cal, r_pro, r_fat, r_carbs),
+              )
+              conn.commit()
               conn.close()
+              st.success(f"成功將「{selected_recipe_title}」加入打卡！")
+              st.rerun()
+            except Exception as e:
+              st.error(f"寫入打卡失敗: {e}")
+
+    with tab_log2:
+      if cat_df.empty:
+        st.info("目前沒有任何食品主檔資料，請先至「食品主檔管理」新增！")
+      else:
+        with st.form("log_catalog_form", clear_on_submit=True):
+          meal_type_c = st.selectbox("餐別", ["早餐", "午餐", "晚餐", "點心"], key="meal_c")
+          selected_food_name = st.selectbox("選擇現成食品 (來自食品主檔)", cat_df["name"].tolist())
+          consume_weight = st.number_input("食用克數或毫升數 (g / ml)", min_value=1.0, value=100.0)
+
+          sub_log_cat = st.form_submit_button("確認以此現成食品打卡並自動扣庫存")
+          if sub_log_cat:
+            f_row = cat_df[cat_df["name"] == selected_food_name].iloc[0]
+            cid = f_row["id"]
+            ratio = consume_weight / 100.0
+            c_cal = float(f_row["calories"] or 0) * ratio
+            c_pro = float(f_row["protein"] or 0) * ratio
+            c_fat = float(f_row["fat"] or 0) * ratio
+            c_carbs = float(f_row["carbs"] or 0) * ratio
+
+            try:
+              conn = sqlite3.connect("pantry.db")
+              c = conn.cursor()
+              c.execute(
+                  """
+                      INSERT INTO daily_logs (user_id, log_date, meal_type, food_name, weight, calories, protein, fat, carbs)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  """,
+                  (current_user_id, date_str, meal_type_c, f"[現成] {selected_food_name}", consume_weight, c_cal, c_pro, c_fat, c_carbs),
+              )
               
-              for item in details.split(","):
-                if ":" in item:
-                  fname, famt_str = item.split(":")
-                  famt = float(famt_str)
-                  m = full_c_df[full_c_df["name"] == fname]
-                  if not m.empty:
-                    r_cal += (float(m["calories"].values[0] or 0) / 100.0) * famt
-                    r_pro += (float(m["protein"].values[0] or 0) / 100.0) * famt
-                    r_fat += (float(m["fat"].values[0] or 0) / 100.0) * famt
-                    r_carbs += (float(m["carbs"].values[0] or 0) / 100.0) * famt
-            except Exception:
-              pass
+              c.execute("SELECT id, current_weight FROM inventory_batches WHERE catalog_id = ? AND status != '已用完' ORDER BY expiry_date ASC", (cid,))
+              batches = c.fetchall()
+              rem = consume_weight
+              for b_id, cur_w in batches:
+                if rem <= 0:
+                  break
+                cur_w = float(cur_w or 0.0)
+                if cur_w > rem:
+                  c.execute("UPDATE inventory_batches SET current_weight = ?, status = '已開封' WHERE id = ?", (cur_w - rem, b_id))
+                  rem = 0.0
+                else:
+                  rem -= cur_w
+                  c.execute("UPDATE inventory_batches SET current_weight = 0.0, status = '已用完' WHERE id = ?", (b_id,))
 
-          try:
-            conn = sqlite3.connect("pantry.db")
-            c = conn.cursor()
-            c.execute(
-                """
-                    INSERT INTO daily_logs (user_id, log_date, meal_type, food_name, weight, calories, protein, fat, carbs)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (current_user_id, date_str, meal_type, f"[菜單] {selected_recipe_title}", 0.0, r_cal, r_pro, r_fat, r_carbs),
-            )
-            conn.commit()
-            conn.close()
-            st.success(f"成功將「{selected_recipe_title}」加入打卡！")
-            st.rerun()
-          except Exception as e:
-            st.error(f"寫入打卡失敗: {e}")
+              conn.commit()
+              conn.close()
+              st.success(f"成功打卡「{selected_food_name} ({consume_weight}g)」並已同步自動扣除冰箱庫存！")
+              st.rerun()
+            except Exception as e:
+              st.error(f"打卡或扣庫存發生錯誤: {e}")
 
-  with tab_log2:
-    if cat_df.empty:
-      st.info("目前沒有任何食品主檔資料，請先至「食品主檔管理」新增！")
+    with tab_log3:
+      with st.form("log_manual_form", clear_on_submit=True):
+        meal_type_m = st.selectbox("餐別", ["早餐", "午餐", "晚餐", "點心"], key="meal_m")
+        manual_name = st.text_input("外食 / 食物名稱 (例如：便利商店雞胸肉、公司附近排骨便當)")
+        manual_amt = st.number_input("食用重量/份量 (g 或 ml)", min_value=1.0, value=100.0)
+        m_cal = st.number_input("總熱量 (大卡)", min_value=0.0, value=150.0)
+        m_pro = st.number_input("蛋白質 (g)", min_value=0.0, value=15.0)
+        m_fat = st.number_input("脂肪 (g)", min_value=0.0, value=5.0)
+        m_carbs = st.number_input("碳水 (g)", min_value=0.0, value=10.0)
+
+        sub_log_m = st.form_submit_button("確認新增外食/自訂打卡")
+        if sub_log_m:
+          if not manual_name.strip():
+            st.error("請輸入食物名稱！")
+          else:
+            try:
+              conn = sqlite3.connect("pantry.db")
+              c = conn.cursor()
+              c.execute(
+                  """
+                      INSERT INTO daily_logs (user_id, log_date, meal_type, food_name, weight, calories, protein, fat, carbs)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  """,
+                  (current_user_id, date_str, meal_type_m, manual_name.strip(), manual_amt, m_cal, m_pro, m_fat, m_carbs),
+              )
+              conn.commit()
+              conn.close()
+              st.success(f"成功新增打卡：{manual_name}")
+              st.rerun()
+            except Exception as e:
+              st.error(f"寫入失敗: {e}")
+
+    st.markdown("---")
+    st.subheader(f"📋 {date_str} 飲食紀錄明細與刪除")
+    if logs_df.empty:
+      st.info("今天還沒有任何飲食打卡紀錄！")
     else:
-      with st.form("log_catalog_form", clear_on_submit=True):
-        meal_type_c = st.selectbox("餐別", ["早餐", "午餐", "晚餐", "點心"], key="meal_c")
-        selected_food_name = st.selectbox("選擇現成食品 (來自食品主檔)", cat_df["name"].tolist())
-        consume_weight = st.number_input("食用克數或毫升數 (g / ml)", min_value=1.0, value=100.0)
+      st.dataframe(
+          logs_df[["meal_type", "food_name", "weight", "calories", "protein", "fat", "carbs"]],
+          use_container_width=True,
+          column_config={
+              "meal_type": "餐別",
+              "food_name": "食物名稱",
+              "weight": "份量(g/ml)",
+              "calories": "熱量(大卡)",
+              "protein": "蛋白質(g)",
+              "fat": "脂肪(g)",
+              "carbs": "碳水(g)",
+          },
+      )
 
-        sub_log_cat = st.form_submit_button("確認以此現成食品打卡並自動扣庫存")
-        if sub_log_cat:
-          f_row = cat_df[cat_df["name"] == selected_food_name].iloc[0]
-          cid = f_row["id"]
-          ratio = consume_weight / 100.0
-          c_cal = float(f_row["calories"] or 0) * ratio
-          c_pro = float(f_row["protein"] or 0) * ratio
-          c_fat = float(f_row["fat"] or 0) * ratio
-          c_carbs = float(f_row["carbs"] or 0) * ratio
-
-          try:
-            conn = sqlite3.connect("pantry.db")
-            c = conn.cursor()
-            
-            # 1. 寫入每日飲食打卡
-            c.execute(
-                """
-                    INSERT INTO daily_logs (user_id, log_date, meal_type, food_name, weight, calories, protein, fat, carbs)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (current_user_id, date_str, meal_type_c, f"[現成] {selected_food_name}", consume_weight, c_cal, c_pro, c_fat, c_carbs),
-            )
-            
-            # 2. 自動執行 FIFO 扣除對應批次庫存
-            c.execute("SELECT id, current_weight FROM inventory_batches WHERE catalog_id = ? AND status != '已用完' ORDER BY expiry_date ASC", (cid,))
-            batches = c.fetchall()
-            rem = consume_weight
-            for b_id, cur_w in batches:
-              if rem <= 0:
-                break
-              cur_w = float(cur_w or 0.0)
-              if cur_w > rem:
-                c.execute("UPDATE inventory_batches SET current_weight = ?, status = '已開封' WHERE id = ?", (cur_w - rem, b_id))
-                rem = 0.0
-              else:
-                rem -= cur_w
-                c.execute("UPDATE inventory_batches SET current_weight = 0.0, status = '已用完' WHERE id = ?", (b_id,))
-
-            conn.commit()
-            conn.close()
-            st.success(f"成功打卡「{selected_food_name} ({consume_weight}g)」並已同步自動扣除冰箱庫存！")
-            st.rerun()
-          except Exception as e:
-            st.error(f"打卡或扣庫存發生錯誤: {e}")
-
-  with tab_log3:
-    with st.form("log_manual_form", clear_on_submit=True):
-      meal_type_m = st.selectbox("餐別", ["早餐", "午餐", "晚餐", "點心"], key="meal_m")
-      manual_name = st.text_input("外食 / 食物名稱 (例如：便利商店雞胸肉、公司附近排骨便當)")
-      manual_amt = st.number_input("食用重量/份量 (g 或 ml)", min_value=1.0, value=100.0)
-      m_cal = st.number_input("總熱量 (大卡)", min_value=0.0, value=150.0)
-      m_pro = st.number_input("蛋白質 (g)", min_value=0.0, value=15.0)
-      m_fat = st.number_input("脂肪 (g)", min_value=0.0, value=5.0)
-      m_carbs = st.number_input("碳水 (g)", min_value=0.0, value=10.0)
-
-      sub_log_m = st.form_submit_button("確認新增外食/自訂打卡")
-      if sub_log_m:
-        if not manual_name.strip():
-          st.error("請輸入食物名稱！")
-        else:
-          try:
-            conn = sqlite3.connect("pantry.db")
-            c = conn.cursor()
-            c.execute(
-                """
-                    INSERT INTO daily_logs (user_id, log_date, meal_type, food_name, weight, calories, protein, fat, carbs)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (current_user_id, date_str, meal_type_m, manual_name.strip(), manual_amt, m_cal, m_pro, m_fat, m_carbs),
-            )
-            conn.commit()
-            conn.close()
-            st.success(f"成功新增打卡：{manual_name}")
-            st.rerun()
-          except Exception as e:
-            st.error(f"寫入失敗: {e}")
-
-  st.markdown("---")
-  st.subheader(f"📋 {date_str} 飲食紀錄明細與刪除")
-  if logs_df.empty:
-    st.info("今天還沒有任何飲食打卡紀錄！")
-  else:
-    st.dataframe(
-        logs_df[["meal_type", "food_name", "weight", "calories", "protein", "fat", "carbs"]],
-        use_container_width=True,
-        column_config={
-            "meal_type": "餐別",
-            "food_name": "食物名稱",
-            "weight": "份量(g/ml)",
-            "calories": "熱量(大卡)",
-            "protein": "蛋白質(g)",
-            "fat": "脂肪(g)",
-            "carbs": "碳水(g)",
-        },
-    )
-
-    del_log_id = st.selectbox(
-        "選擇要刪除的打卡紀錄 ID",
-        options=logs_df["id"],
-        format_func=lambda x: f"紀錄 ID: {x} - {logs_df[logs_df['id'] == x]['meal_type'].values[0]}: {logs_df[logs_df['id'] == x]['food_name'].values[0]}",
-    )
-    if st.button("刪除選定打卡紀錄"):
-      try:
-        conn = sqlite3.connect("pantry.db")
-        c = conn.cursor()
-        c.execute("DELETE FROM daily_logs WHERE id = ?", (del_log_id,))
-        conn.commit()
-        conn.close()
-        st.success("已成功刪除該筆打卡！")
-        st.rerun()
-      except Exception as e:
-        st.error(f"刪除失敗: {e}")
+      del_log_id = st.selectbox(
+          "選擇要刪除的打卡紀錄 ID",
+          options=logs_df["id"],
+          format_func=lambda x: f"紀錄 ID: {x} - {logs_df[logs_df['id'] == x]['meal_type'].values[0]}: {logs_df[logs_df['id'] == x]['food_name'].values[0]}",
+      )
+      if st.button("刪除選定打卡紀錄"):
+        try:
+          conn = sqlite3.connect("pantry.db")
+          c = conn.cursor()
+          c.execute("DELETE FROM daily_logs WHERE id = ?", (del_log_id,))
+          conn.commit()
+          conn.close()
+          st.success("已成功刪除該筆打卡！")
+          st.rerun()
+        except Exception as e:
+          st.error(f"刪除失敗: {e}")
 
 
 # --- 功能三：食品主檔管理 ---
@@ -776,15 +792,33 @@ elif menu == "📦 庫存與批次總覽":
     st.dataframe(df, use_container_width=True)
 
 
-# --- 功能六：菜單、烹飪與冰箱推薦 ---
+# --- 功能六：菜單、烹飪與冰箱清倉推薦 ---
 elif menu == "📋 菜單、烹飪與冰箱推薦":
-  st.header("📋 智慧菜單與精準烹飪扣庫存")
+  st.header("📋 智慧菜單、精準烹飪扣庫存與即期清倉推薦")
   try:
     conn = sqlite3.connect("pantry.db")
     cat_df = pd.read_sql_query("SELECT id, name, calories FROM food_catalog", conn)
+    batches_df = pd.read_sql_query("""
+        SELECT b.*, c.name as catalog_name 
+        FROM inventory_batches b 
+        LEFT JOIN food_catalog c ON b.catalog_id = c.id
+        WHERE b.status != '已用完'
+    """, conn)
     conn.close()
   except Exception:
     cat_df = pd.DataFrame()
+    batches_df = pd.DataFrame()
+
+  # 掃描即期或過期食材
+  expiring_items = []
+  if not batches_df.empty:
+    for idx, row in batches_df.iterrows():
+      status_str = check_expiry(row["expiry_date"])
+      if "🔴" in status_str or "🟡" in status_str:
+        expiring_items.append(row["catalog_name"])
+
+  if expiring_items:
+    st.warning(f"⏰ **冰箱清倉提醒**：以下食材即將過期或已過期，建議優先烹調：**{', '.join(set(expiring_items))}**")
 
   tab1, tab2 = st.tabs(["📖 現有菜單與烹飪扣庫存", "✨ 新增菜單"])
   with tab2:
@@ -827,13 +861,24 @@ elif menu == "📋 菜單、烹飪與冰箱推薦":
       st.info("尚無菜單。")
     else:
       for index, row in recipes_df.iterrows():
-        with st.expander(f"🍳 {row['title']}"):
+        # 檢查此菜單是否包含即期食材
+        is_recommended = False
+        details = str(row["ingredients_detail"])
+        for exp_name in expiring_items:
+          if exp_name in details:
+            is_recommended = True
+            break
+
+        expander_title = f"🔥 【推薦清倉】 {row['title']}" if is_recommended else f"🍳 {row['title']}"
+        with st.expander(expander_title):
+          if is_recommended:
+            st.info("💡 包含冰箱中即將過期的食材，強烈建議優先製作！")
           st.markdown(f"**步驟：**\n{row['instructions']}")
           if st.button("🔥 開始烹飪 (扣庫存)", key=f"cook_{row['id']}"):
             try:
               conn = sqlite3.connect("pantry.db")
               c = conn.cursor()
-              for item in str(row["ingredients_detail"]).split(","):
+              for item in details.split(","):
                 if ":" in item:
                   fname, famt_str = item.split(":")
                   famt = float(famt_str)
@@ -861,7 +906,51 @@ elif menu == "📋 菜單、烹飪與冰箱推薦":
               st.error(f"烹飪扣庫存發生錯誤: {e}")
 
 
-# --- 功能七：支出分析與預算 ---
+# --- 功能七：智能自動補貨清單 ---
+elif menu == "🛒 智能自動補貨清單":
+  st.header("🛒 智能自動補貨清單")
+  st.markdown("系統會自動偵測冰箱中已用完或庫存歸零的品項，方便您直接列出採購清單！")
+
+  try:
+    conn = sqlite3.connect("pantry.db")
+    # 找出所有主檔商品，並檢查其批次狀態
+    cat_df = pd.read_sql_query("SELECT * FROM food_catalog", conn)
+    batches_df = pd.read_sql_query("SELECT * FROM inventory_batches", conn)
+    conn.close()
+  except Exception:
+    cat_df = pd.DataFrame()
+    batches_df = pd.DataFrame()
+
+  if cat_df.empty:
+    st.info("目前尚無食品主檔資料。")
+  else:
+    shopping_list = []
+    for idx, c_row in cat_df.iterrows():
+      c_id = c_row["id"]
+      c_name = c_row["name"]
+      c_brand = c_row["brand"]
+      
+      # 篩選該主檔的所有批次
+      b_subset = batches_df[batches_df["catalog_id"] == c_id] if not batches_df.empty else pd.DataFrame()
+      
+      # 如果完全沒有批次，或所有批次狀態都是已用完 / 總庫存 <= 0
+      if b_subset.empty:
+        shopping_list.append({"品名": c_name, "品牌": c_brand or "無", "原因": "從未入庫或無記錄"})
+      else:
+        active_batches = b_subset[b_subset["status"] != "已用完"]
+        total_remaining = active_batches["current_weight"].sum() if not active_batches.empty else 0.0
+        if active_batches.empty or total_remaining <= 0:
+          shopping_list.append({"品名": c_name, "品牌": c_brand or "無", "原因": "庫存已用完"})
+
+    if not shopping_list:
+      st.success("🎉 太棒了！目前冰箱所有品項都有庫存，暫時不需要補貨！")
+    else:
+      st.warning(f"📋 系統偵測到有 **{len(shopping_list)}** 項商品需要補貨：")
+      shop_df = pd.DataFrame(shopping_list)
+      st.dataframe(shop_df, use_container_width=True)
+
+
+# --- 功能八：支出分析與預算 ---
 elif menu == "🛒 支出分析、預算與比價":
   st.header("🛒 智慧購物與預算控管")
   try:
