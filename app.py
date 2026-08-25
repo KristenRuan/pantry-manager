@@ -393,7 +393,7 @@ elif menu == "🔥 每日飲食打卡與減脂儀表板":
         "SELECT * FROM daily_logs WHERE user_id = ? AND log_date = ?", conn, params=(current_user_id, date_str)
     )
     recipes_df = pd.read_sql_query("SELECT id, title, ingredients_detail FROM recipes", conn)
-    cat_df = pd.read_sql_query("SELECT name, calories, protein, fat, carbs FROM food_catalog", conn)
+    cat_df = pd.read_sql_query("SELECT id, name, calories, protein, fat, carbs FROM food_catalog", conn)
     conn.close()
   except Exception:
     logs_df = pd.DataFrame()
@@ -425,7 +425,7 @@ elif menu == "🔥 每日飲食打卡與減脂儀表板":
   st.markdown("---")
   st.subheader("➕ 新增今日飲食打卡")
 
-  tab_log1, tab_log2 = st.tabs(["🍳 從現有智慧菜單快速匯入", "✍️ 自訂/外食手動新增"])
+  tab_log1, tab_log2, tab_log3 = st.tabs(["🍳 從智慧菜單匯入", "🥫 從現成食品主檔直接選取 (自動扣庫存)", "✍️ 自訂/外食手動輸入"])
 
   with tab_log1:
     if recipes_df.empty:
@@ -472,22 +472,76 @@ elif menu == "🔥 每日飲食打卡與減脂儀表板":
             )
             conn.commit()
             conn.close()
-            st.success(f"成功將「{selected_recipe_title}」加入 {date_str} 的{meal_type}打卡！")
+            st.success(f"成功將「{selected_recipe_title}」加入打卡！")
             st.rerun()
           except Exception as e:
             st.error(f"寫入打卡失敗: {e}")
 
   with tab_log2:
+    if cat_df.empty:
+      st.info("目前沒有任何食品主檔資料，請先至「食品主檔管理」新增！")
+    else:
+      with st.form("log_catalog_form", clear_on_submit=True):
+        meal_type_c = st.selectbox("餐別", ["早餐", "午餐", "晚餐", "點心"], key="meal_c")
+        selected_food_name = st.selectbox("選擇現成食品 (來自食品主檔)", cat_df["name"].tolist())
+        consume_weight = st.number_input("食用克數或毫升數 (g / ml)", min_value=1.0, value=100.0)
+
+        sub_log_cat = st.form_submit_button("確認以此現成食品打卡並自動扣庫存")
+        if sub_log_cat:
+          f_row = cat_df[cat_df["name"] == selected_food_name].iloc[0]
+          cid = f_row["id"]
+          ratio = consume_weight / 100.0
+          c_cal = float(f_row["calories"] or 0) * ratio
+          c_pro = float(f_row["protein"] or 0) * ratio
+          c_fat = float(f_row["fat"] or 0) * ratio
+          c_carbs = float(f_row["carbs"] or 0) * ratio
+
+          try:
+            conn = sqlite3.connect("pantry.db")
+            c = conn.cursor()
+            
+            # 1. 寫入每日飲食打卡
+            c.execute(
+                """
+                    INSERT INTO daily_logs (user_id, log_date, meal_type, food_name, weight, calories, protein, fat, carbs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (current_user_id, date_str, meal_type_c, f"[現成] {selected_food_name}", consume_weight, c_cal, c_pro, c_fat, c_carbs),
+            )
+            
+            # 2. 自動執行 FIFO 扣除對應批次庫存
+            c.execute("SELECT id, current_weight FROM inventory_batches WHERE catalog_id = ? AND status != '已用完' ORDER BY expiry_date ASC", (cid,))
+            batches = c.fetchall()
+            rem = consume_weight
+            for b_id, cur_w in batches:
+              if rem <= 0:
+                break
+              cur_w = float(cur_w or 0.0)
+              if cur_w > rem:
+                c.execute("UPDATE inventory_batches SET current_weight = ?, status = '已開封' WHERE id = ?", (cur_w - rem, b_id))
+                rem = 0.0
+              else:
+                rem -= cur_w
+                c.execute("UPDATE inventory_batches SET current_weight = 0.0, status = '已用完' WHERE id = ?", (b_id,))
+
+            conn.commit()
+            conn.close()
+            st.success(f"成功打卡「{selected_food_name} ({consume_weight}g)」並已同步自動扣除冰箱庫存！")
+            st.rerun()
+          except Exception as e:
+            st.error(f"打卡或扣庫存發生錯誤: {e}")
+
+  with tab_log3:
     with st.form("log_manual_form", clear_on_submit=True):
       meal_type_m = st.selectbox("餐別", ["早餐", "午餐", "晚餐", "點心"], key="meal_m")
-      manual_name = st.text_input("食物名稱 (例如：雞胸肉沙拉、便當)")
+      manual_name = st.text_input("外食 / 食物名稱 (例如：便利商店雞胸肉、公司附近排骨便當)")
       manual_amt = st.number_input("食用重量/份量 (g 或 ml)", min_value=1.0, value=100.0)
-      m_cal = st.number_input("熱量 (大卡)", min_value=0.0, value=150.0)
+      m_cal = st.number_input("總熱量 (大卡)", min_value=0.0, value=150.0)
       m_pro = st.number_input("蛋白質 (g)", min_value=0.0, value=15.0)
       m_fat = st.number_input("脂肪 (g)", min_value=0.0, value=5.0)
       m_carbs = st.number_input("碳水 (g)", min_value=0.0, value=10.0)
 
-      sub_log_m = st.form_submit_button("確認新增打卡紀錄")
+      sub_log_m = st.form_submit_button("確認新增外食/自訂打卡")
       if sub_log_m:
         if not manual_name.strip():
           st.error("請輸入食物名稱！")
@@ -520,7 +574,7 @@ elif menu == "🔥 每日飲食打卡與減脂儀表板":
         column_config={
             "meal_type": "餐別",
             "food_name": "食物名稱",
-            "weight": "份量(g)",
+            "weight": "份量(g/ml)",
             "calories": "熱量(大卡)",
             "protein": "蛋白質(g)",
             "fat": "脂肪(g)",
