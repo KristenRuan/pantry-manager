@@ -5,7 +5,7 @@ import streamlit as st
 
 # 頁面基本設定
 st.set_page_config(
-    page_title="個人與多成員居家、食品、代購與美妝保養實驗庫", page_icon="💄", layout="wide"
+    page_title="個人與多成員居家、食品、代購與美妝保養實驗庫", page_icon="🏠", layout="wide"
 )
 
 
@@ -22,12 +22,12 @@ def init_db():
         )
     """)
   default_cats = [
-      "調味料",
-      "冷凍肉品",
       "零食",
       "生鮮",
-      "主食",
+      "冷凍",
       "飲料",
+      "主食",
+      "調味料",
       "日常消耗品",
       "衛浴清潔",
       "個人護理",
@@ -42,7 +42,7 @@ def init_db():
     except sqlite3.OperationalError:
       pass
 
-  # 2. 商品/食品/保養品主檔 (新增 barcode 條碼欄位)
+  # 2. 商品/食品/保養品主檔
   c.execute("""
         CREATE TABLE IF NOT EXISTS food_catalog (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,7 +110,6 @@ def init_db():
         )
     """)
 
-  # 相容性升級欄位檢查
   for col_sql in [
       "ALTER TABLE inventory_batches ADD COLUMN purchase_date TEXT DEFAULT ''",
       "ALTER TABLE inventory_batches ADD COLUMN current_weight REAL DEFAULT 0.0",
@@ -201,6 +200,17 @@ def init_db():
 init_db()
 
 
+# 💡 確保每次都能抓到最新資料的讀取函數
+def get_users_df():
+  try:
+    conn = sqlite3.connect("pantry.db")
+    df = pd.read_sql_query("SELECT * FROM users", conn)
+    conn.close()
+    return df
+  except Exception:
+    return pd.DataFrame()
+
+
 def get_setting(key, default_val=""):
   try:
     conn = sqlite3.connect("pantry.db")
@@ -255,12 +265,12 @@ def get_categories():
     )
   except Exception:
     return [
-        "調味料",
-        "冷凍肉品",
         "零食",
         "生鮮",
-        "主食",
+        "冷凍",
         "飲料",
+        "主食",
+        "調味料",
         "日常消耗品",
         "衛浴清潔",
         "個人護理",
@@ -272,9 +282,15 @@ def get_categories():
 
 
 def check_expiry(date_str, opened_date_str="", pao_months=12, status="未開封"):
-  if status == "已開封" and opened_date_str and str(opened_date_str).strip() not in ["", "None", "NaT"]:
+  if (
+      status == "已開封"
+      and opened_date_str
+      and str(opened_date_str).strip() not in ["", "None", "NaT"]
+  ):
     try:
-      opened = datetime.datetime.strptime(str(opened_date_str).split()[0], "%Y-%m-%d").date()
+      opened = datetime.datetime.strptime(
+          str(opened_date_str).split()[0], "%Y-%m-%d"
+      ).date()
       pao_days = int(pao_months * 30.44)
       pao_exp = opened + datetime.timedelta(days=pao_days)
       today = datetime.date.today()
@@ -289,7 +305,9 @@ def check_expiry(date_str, opened_date_str="", pao_months=12, status="未開封"
   if not date_str or str(date_str).strip() in ["", "None", "NaT"]:
     return "未知"
   try:
-    exp = datetime.datetime.strptime(str(date_str).split()[0], "%Y-%m-%d").date()
+    exp = datetime.datetime.strptime(
+        str(date_str).split()[0], "%Y-%m-%d"
+    ).date()
     today = datetime.date.today()
     delta = (exp - today).days
     if delta < 0:
@@ -303,14 +321,9 @@ def check_expiry(date_str, opened_date_str="", pao_months=12, status="未開封"
 
 
 # --- 側邊欄全域設定 ---
-st.sidebar.title("💄 居家、飲食與美妝保養庫")
+st.sidebar.title("🏠 居家、飲食與美妝保養庫")
 
-try:
-  conn = sqlite3.connect("pantry.db")
-  users_df = pd.read_sql_query("SELECT * FROM users", conn)
-  conn.close()
-except Exception:
-  users_df = pd.DataFrame()
+users_df = get_users_df()
 
 if users_df.empty:
   st.sidebar.warning(
@@ -330,16 +343,16 @@ menu = st.sidebar.selectbox(
     "選擇功能",
     [
         "🔥 每日飲食打卡與減脂儀表板",
-        "👥 成員管理與目標設定",
         "📦 庫存與批次總覽 (含海外代購與PAO)",
-        "🧴 晨間 (AM) 與夜間 (PM) 保養 Routine 推薦",
+        "📥 新增購買批次 (快速入庫)",
         "🏷️ 商品與保養品主檔管理",
         "📷 條碼掃描快速入庫 / 查詢",
-        "🧪 保養品/商品使用心得與實驗筆記 (含照片)",
-        "📥 新增購買批次 (快速入庫)",
         "📋 菜單、烹飪與冰箱推薦",
         "🛒 智能自動補貨清單 (含日用品/保養品)",
         "🛒 支出分析、預算與比價",
+        "🧴 晨間 (AM) 與夜間 (PM) 保養 Routine 推薦",
+        "🧪 保養品/商品使用心得與實驗筆記 (含照片)",
+        "👥 成員管理與目標設定",
     ],
 )
 
@@ -382,209 +395,251 @@ if st.sidebar.button("刪除所選分類"):
       st.rerun()
     except Exception as e:
       st.sidebar.error(f"刪除失敗: {e}")
-
-
 # --- 功能一：成員管理與目標設定 ---
 if menu == "👥 成員管理與目標設定":
-  st.header("👥 家庭成員、姓名修改與減脂目標設定")
-  tab_m1, tab_m2, tab_m3 = st.tabs(
-      [
-          "➕ 新增成員",
-          "✏️ 編輯現有成員名字與身體數據",
-          "📈 記錄今日體重與個人趨勢圖",
-      ]
-  )
+    st.header("👥 家庭成員、姓名修改與減脂目標設定")
+    tab_m1, tab_m2, tab_m3 = st.tabs(
+        [
+            "➕ 新增成員",
+            "✏️ 編輯或刪除現有成員",
+            "📈 記錄今日體重與個人趨勢圖",
+        ]
+    )
 
-  with tab_m1:
-    with st.form("add_user_form", clear_on_submit=True):
-      u_name = st.text_input("成員姓名 (例如：小明)")
-      u_gender = st.selectbox("生理性別", ["男", "女"])
-      u_age = st.number_input("年齡", min_value=1, max_value=120, value=25)
-      u_height = st.number_input(
-          "身高 (cm)", min_value=50.0, max_value=250.0, value=170.0
-      )
-      u_weight = st.number_input(
-          "體重 (kg)", min_value=20.0, max_value=300.0, value=65.0
-      )
-      u_activity = st.selectbox(
-          "日常活動量係數",
-          options=[1.2, 1.375, 1.55, 1.725, 1.9],
-          format_func=lambda x: {
-              1.2: "久坐不動（幾乎不運動）",
-              1.375: "輕度活動（每周運動 1-3 天）",
-              1.55: "中度活動（每周運動 3-5 天）",
-              1.725: "高度活動（每周運動 6-7 天）",
-              1.9: "極高度活動（勞力密集工作或每天雙練）",
-          }[x],
-      )
-      u_deficit = st.number_input(
-          "減脂熱量赤字 (大卡，建議 300 ~ 500)",
-          min_value=0.0,
-          max_value=1000.0,
-          value=400.0,
-          step=50.0,
-      )
+    with tab_m1:
+        with st.form("add_user_form", clear_on_submit=True):
+            u_name = st.text_input("成員姓名 (例如：小明)")
+            u_gender = st.selectbox("生理性別", ["男", "女"])
+            u_age = st.number_input("年齡", min_value=1, max_value=120, value=25)
+            u_height = st.number_input(
+                "身高 (cm)", min_value=50.0, max_value=250.0, value=170.0
+            )
+            u_weight = st.number_input(
+                "體重 (kg)", min_value=20.0, max_value=300.0, value=65.0
+            )
+            u_activity = st.selectbox(
+                "日常活動量係數",
+                options=[1.2, 1.375, 1.55, 1.725, 1.9],
+                format_func=lambda x: {
+                    1.2: "久坐不動（幾乎不運動）",
+                    1.375: "輕度活動（每周運動 1-3 天）",
+                    1.55: "中度活動（每周運動 3-5 天）",
+                    1.725: "高度活動（每周運動 6-7 天）",
+                    1.9: "極高度活動（勞力密集工作或每天雙練）",
+                }[x],
+            )
+            u_deficit = st.number_input(
+                "減脂熱量赤字 (大卡，建議 300 ~ 500)",
+                min_value=0.0,
+                max_value=1000.0,
+                value=400.0,
+                step=50.0,
+            )
 
-      sub_user = st.form_submit_button("新增成員")
-      if sub_user:
-        if not u_name.strip():
-          st.error("請輸入成員姓名！")
+            sub_user = st.form_submit_button("新增成員")
+            if sub_user:
+                if not u_name.strip():
+                    st.error("請輸入成員姓名！")
+                else:
+                    try:
+                        conn = sqlite3.connect("pantry.db")
+                        c = conn.cursor()
+                        c.execute(
+                            """
+                            INSERT INTO users (name, gender, age, height, weight, activity_level, goal_deficit)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                            (
+                                u_name.strip(),
+                                u_gender,
+                                u_age,
+                                u_height,
+                                u_weight,
+                                u_activity,
+                                u_deficit,
+                            ),
+                        )
+                        c.execute("SELECT last_insert_rowid()")
+                        new_uid = c.fetchone()[0]
+                        c.execute(
+                            "INSERT INTO weight_logs (user_id, log_date, weight) VALUES (?, ?, ?)",
+                            (new_uid, str(datetime.date.today()), u_weight),
+                        )
+                        conn.commit()
+                        conn.close()
+                        st.success(f"成功新增成員：「{u_name}」！")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("此成員名稱已經存在！")
+                    except Exception as e:
+                        st.error(f"發生錯誤: {e}")
+
+    with tab_m2:
+        fresh_users_df = get_users_df()
+        if fresh_users_df.empty:
+            st.info("目前沒有成員資料。")
         else:
-          try:
-            conn = sqlite3.connect("pantry.db")
-            c = conn.cursor()
-            c.execute(
-                """
-                        INSERT INTO users (name, gender, age, height, weight, activity_level, goal_deficit)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                (
-                    u_name.strip(),
-                    u_gender,
-                    u_age,
-                    u_height,
-                    u_weight,
-                    u_activity,
-                    u_deficit,
-                ),
-            )
-            c.execute("SELECT last_insert_rowid()")
-            new_uid = c.fetchone()[0]
-            c.execute(
-                "INSERT INTO weight_logs (user_id, log_date, weight) VALUES (?, ?, ?)",
-                (new_uid, str(datetime.date.today()), u_weight),
-            )
-            conn.commit()
-            conn.close()
-            st.success(f"成功新增成員：「{u_name}」！")
-            st.rerun()
-          except sqlite3.IntegrityError:
-            st.error("此成員名稱已經存在！")
-          except Exception as e:
-            st.error(f"發生錯誤: {e}")
+            # 💡 用 Form 把編輯包起來，確保點擊送出時資料與 ID 完美同步
+            with st.form("edit_user_form_combined"):
+                edit_u_name = st.selectbox(
+                    "選擇要編輯的成員", fresh_users_df["name"].tolist()
+                )
+                row_u = fresh_users_df[fresh_users_df["name"] == edit_u_name].iloc[0]
 
-  with tab_m2:
-    if users_df.empty:
-      st.info("目前沒有成員資料。")
-    else:
-      edit_u_name = st.selectbox(
-          "選擇要編輯的成員", users_df["name"].tolist(), key="edit_u_select"
-      )
-      row_u = users_df[users_df["name"] == edit_u_name].iloc[0]
+                st.markdown(f"**正在編輯：{row_u['name']} (ID: {row_u['id']})**")
 
-      with st.form("edit_user_form"):
-        eu_name = st.text_input("修改成員姓名", value=row_u["name"])
-        eu_gender = st.selectbox(
-            "生理性別", ["男", "女"], index=0 if row_u["gender"] == "男" else 1
-        )
-        eu_age = st.number_input(
-            "年齡", min_value=1, max_value=120, value=int(row_u["age"] or 25)
-        )
-        eu_height = st.number_input(
-            "身高 (cm)",
-            min_value=50.0,
-            max_value=250.0,
-            value=float(row_u["height"] or 170.0),
-        )
-        eu_weight = st.number_input(
-            "體重 (kg)",
-            min_value=20.0,
-            max_value=300.0,
-            value=float(row_u["weight"] or 65.0),
-        )
+                eu_name = st.text_input("修改成員姓名", value=str(row_u["name"]))
+                eu_gender = st.selectbox(
+                    "生理性別",
+                    ["男", "女"],
+                    index=0 if row_u["gender"] == "男" else 1,
+                )
+                eu_age = st.number_input(
+                    "年齡", min_value=1, max_value=120, value=int(row_u["age"] or 25)
+                )
+                eu_height = st.number_input(
+                    "身高 (cm)",
+                    min_value=50.0,
+                    max_value=250.0,
+                    value=float(row_u["height"] or 170.0),
+                )
+                eu_weight = st.number_input(
+                    "體重 (kg)",
+                    min_value=20.0,
+                    max_value=300.0,
+                    value=float(row_u["weight"] or 65.0),
+                )
 
-        act_options = [1.2, 1.375, 1.55, 1.725, 1.9]
-        default_act_idx = (
-            act_options.index(row_u["activity_level"])
-            if row_u["activity_level"] in act_options
-            else 0
-        )
-        eu_activity = st.selectbox(
-            "日常活動量係數", options=act_options, index=default_act_idx
-        )
-        eu_deficit = st.number_input(
-            "減脂熱量赤字 (大卡)",
-            min_value=0.0,
-            max_value=1000.0,
-            value=float(row_u["goal_deficit"] or 400.0),
-        )
+                act_options = [1.2, 1.375, 1.55, 1.725, 1.9]
+                default_act_idx = (
+                    act_options.index(row_u["activity_level"])
+                    if row_u["activity_level"] in act_options
+                    else 0
+                )
+                eu_activity = st.selectbox(
+                    "日常活動量係數",
+                    options=act_options,
+                    index=default_act_idx,
+                    format_func=lambda x: {
+                        1.2: "久坐不動（幾乎不運動）",
+                        1.375: "輕度活動（每周運動 1-3 天）",
+                        1.55: "中度活動（每周運動 3-5 天）",
+                        1.725: "高度活動（每周運動 6-7 天）",
+                        1.9: "極高度活動（勞力密集工作或每天雙練）",
+                    }[x],
+                )
+                eu_deficit = st.number_input(
+                    "減脂熱量赤字 (大卡)",
+                    min_value=0.0,
+                    max_value=1000.0,
+                    value=float(row_u["goal_deficit"] or 400.0),
+                )
 
-        sub_edit = st.form_submit_button("儲存修改")
-        if sub_edit:
-          try:
-            conn = sqlite3.connect("pantry.db")
-            c = conn.cursor()
-            c.execute(
-                """
-                    UPDATE users SET name = ?, gender = ?, age = ?, height = ?, weight = ?, activity_level = ?, goal_deficit = ?
-                    WHERE id = ?
-                """,
-                (
-                    eu_name.strip(),
-                    eu_gender,
-                    eu_age,
-                    eu_height,
-                    eu_weight,
-                    eu_activity,
-                    eu_deficit,
-                    row_u["id"],
-                ),
-            )
-            conn.commit()
-            conn.close()
-            st.success("成員資料與姓名更新成功！")
-            st.rerun()
-          except Exception as e:
-            st.error(f"更新失敗: {e}")
+                sub_edit = st.form_submit_button("儲存修改")
+                if sub_edit:
+                    try:
+                        conn = sqlite3.connect("pantry.db")
+                        c = conn.cursor()
+                        c.execute(
+                            """
+                            UPDATE users 
+                            SET name = ?, gender = ?, age = ?, height = ?, weight = ?, activity_level = ?, goal_deficit = ?
+                            WHERE id = ?
+                        """,
+                            (
+                                eu_name.strip(),
+                                eu_gender,
+                                eu_age,
+                                eu_height,
+                                eu_weight,
+                                eu_activity,
+                                eu_deficit,
+                                int(row_u["id"]),
+                            ),
+                        )
+                        conn.commit()
+                        conn.close()
+                        st.success("成員資料與姓名更新成功！")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("此成員名稱已經存在，請更換其他名稱！")
+                    except Exception as e:
+                        st.error(f"更新失敗: {e}")
 
-  with tab_m3:
-    if users_df.empty:
-      st.info("請先新增成員。")
-    else:
-      st.subheader(f"📈 【{selected_user_name}】的體重變化紀錄與趨勢")
-      with st.form("weight_log_form", clear_on_submit=True):
-        w_date = st.date_input("記錄日期", datetime.date.today())
-        new_w = st.number_input(
-            "今日量測體重 (kg)",
-            min_value=20.0,
-            max_value=300.0,
-            value=float(current_user_row["weight"] or 65.0),
-        )
-        sub_w_log = st.form_submit_button("儲存體重並自動更新 TDEE")
-        if sub_w_log:
-          try:
-            conn = sqlite3.connect("pantry.db")
-            c = conn.cursor()
-            c.execute(
-                "INSERT INTO weight_logs (user_id, log_date, weight) VALUES (?, ?, ?)",
-                (current_user_id, str(w_date), new_w),
-            )
-            c.execute(
-                "UPDATE users SET weight = ? WHERE id = ?",
-                (new_w, current_user_id),
-            )
-            conn.commit()
-            conn.close()
-            st.success(f"成功記錄體重 {new_w} kg！")
-            st.rerun()
-          except Exception as e:
-            st.error(f"記錄失敗: {e}")
+            st.markdown("---")
+            # 刪除獨立出來，用下拉選單選擇要刪除的人
+            with st.expander("⚠️ 危險區域：刪除成員"):
+                del_target_name = st.selectbox(
+                    "選擇要刪除的成員", fresh_users_df["name"].tolist(), key="del_select"
+                )
+                del_row = fresh_users_df[fresh_users_df["name"] == del_target_name].iloc[0]
+                
+                if st.button("確認永久刪除此成員", key="confirm_del_btn"):
+                    if len(fresh_users_df) <= 1:
+                        st.error("⚠️ 系統中至少需保留一位成員，無法全部刪除！")
+                    else:
+                        try:
+                            conn = sqlite3.connect("pantry.db")
+                            c = conn.cursor()
+                            c.execute("DELETE FROM daily_logs WHERE user_id = ?", (int(del_row["id"]),))
+                            c.execute("DELETE FROM weight_logs WHERE user_id = ?", (int(del_row["id"]),))
+                            c.execute("DELETE FROM item_reviews WHERE user_id = ?", (int(del_row["id"]),))
+                            c.execute("DELETE FROM users WHERE id = ?", (int(del_row["id"]),))
+                            conn.commit()
+                            conn.close()
+                            st.success(f"已成功刪除成員：{del_target_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"刪除失敗: {e}")
 
-      st.markdown("---")
-      try:
-        conn = sqlite3.connect("pantry.db")
-        w_logs_df = pd.read_sql_query(
-            "SELECT log_date, weight FROM weight_logs WHERE user_id = ? ORDER BY log_date ASC",
-            conn,
-            params=(current_user_id,),
-        )
-        conn.close()
-      except Exception:
-        w_logs_df = pd.DataFrame()
+    with tab_m3:
+        if users_df.empty:
+            st.info("請先新增成員。")
+        else:
+            st.subheader(f"📈 【{selected_user_name}】的體重變化紀錄與趨勢")
+            with st.form("weight_log_form", clear_on_submit=True):
+                w_date = st.date_input("記錄日期", datetime.date.today())
+                new_w = st.number_input(
+                    "今日量測體重 (kg)",
+                    min_value=20.0,
+                    max_value=300.0,
+                    value=float(current_user_row["weight"] or 65.0),
+                )
+                sub_w_log = st.form_submit_button("儲存體重並自動更新 TDEE")
+                if sub_w_log:
+                    try:
+                        conn = sqlite3.connect("pantry.db")
+                        c = conn.cursor()
+                        c.execute(
+                            "INSERT INTO weight_logs (user_id, log_date, weight) VALUES (?, ?, ?)",
+                            (current_user_id, str(w_date), new_w),
+                        )
+                        c.execute(
+                            "UPDATE users SET weight = ? WHERE id = ?",
+                            (new_w, current_user_id),
+                        )
+                        conn.commit()
+                        conn.close()
+                        st.success(f"成功記錄體重 {new_w} kg！")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"記錄失敗: {e}")
 
-      if not w_logs_df.empty:
-        w_logs_df["log_date"] = pd.to_datetime(w_logs_df["log_date"])
-        st.line_chart(w_logs_df.set_index("log_date"), y="weight")
+            st.markdown("---")
+            try:
+                conn = sqlite3.connect("pantry.db")
+                w_logs_df = pd.read_sql_query(
+                    "SELECT log_date, weight FROM weight_logs WHERE user_id = ? ORDER BY log_date ASC",
+                    conn,
+                    params=(current_user_id,),
+                )
+                conn.close()
+            except Exception:
+                w_logs_df = pd.DataFrame()
+
+            if not w_logs_df.empty:
+                w_logs_df["log_date"] = pd.to_datetime(w_logs_df["log_date"])
+                st.line_chart(w_logs_df.set_index("log_date"), y="weight")
 
 
 # --- 功能二：每日飲食打卡與減脂儀表板 ---
@@ -641,13 +696,50 @@ elif menu == "🔥 每日飲食打卡與減脂儀表板":
       )
 
     total_cal_consumed = (
-        logs_df["calories"].sum() if not logs_df.empty and "calories" in logs_df else 0.0
+        logs_df["calories"].sum()
+        if not logs_df.empty and "calories" in logs_df
+        else 0.0
     )
-    st.subheader(f"📊 {date_str} 營養攝取進度")
-    st.metric(
-        "今日已攝取熱量",
+    total_pro = (
+        logs_df["protein"].sum()
+        if not logs_df.empty and "protein" in logs_df
+        else 0.0
+    )
+    total_fat = (
+        logs_df["fat"].sum() if not logs_df.empty and "fat" in logs_df else 0.0
+    )
+    total_carbs = (
+        logs_df["carbs"].sum()
+        if not logs_df.empty and "carbs" in logs_df
+        else 0.0
+    )
+
+    st.subheader(f"📊 {date_str} 營養攝取進度儀表板")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(
+        "今日熱量攝取",
         f"{total_cal_consumed:.1f} / {target_calories:.0f} 大卡",
     )
+    m2.metric("蛋白質 (Protein)", f"{total_pro:.1f} g")
+    m3.metric("脂肪 (Fat)", f"{total_fat:.1f} g")
+    m4.metric("碳水化合物 (Carbs)", f"{total_carbs:.1f} g")
+
+    if not logs_df.empty:
+      st.markdown("#### 📝 今日已打卡明細")
+      st.dataframe(
+          logs_df[
+              [
+                  "meal_type",
+                  "food_name",
+                  "weight",
+                  "calories",
+                  "protein",
+                  "fat",
+                  "carbs",
+              ]
+          ],
+          use_container_width=True,
+      )
 
     st.markdown("---")
     tab_log1, tab_log2, tab_log3 = st.tabs(
@@ -680,16 +772,17 @@ elif menu == "🔥 每日飲食打卡與減脂儀表板":
                     famt = float(famt_str)
                     m = full_c_df[full_c_df["name"] == fname]
                     if not m.empty:
+                      ratio = famt / 100.0
                       r_cal += (
-                          float(m["calories"].values[0] or 0) / 100.0
-                      ) * famt
+                          float(m["calories"].values[0] or 0) * ratio
+                      )
                       r_pro += (
-                          float(m["protein"].values[0] or 0) / 100.0
-                      ) * famt
-                      r_fat += (float(m["fat"].values[0] or 0) / 100.0) * famt
+                          float(m["protein"].values[0] or 0) * ratio
+                      )
+                      r_fat += (float(m["fat"].values[0] or 0) * ratio)
                       r_carbs += (
-                          float(m["carbs"].values[0] or 0) / 100.0
-                      ) * famt
+                          float(m["carbs"].values[0] or 0) * ratio
+                      )
               except Exception:
                 pass
             conn = sqlite3.connect("pantry.db")
@@ -718,7 +811,9 @@ elif menu == "🔥 每日飲食打卡與減脂儀表板":
 
     with tab_log2:
       if not cat_df.empty:
-        search_kw = st.text_input("🔍 輸入關鍵字搜尋食品", "", key="food_search_kw")
+        search_kw = st.text_input(
+            "🔍 輸入關鍵字搜尋食品", "", key="food_search_kw"
+        )
         filtered_cat_df = (
             cat_df[
                 cat_df["name"].str.contains(search_kw, case=False, na=False)
@@ -738,7 +833,7 @@ elif menu == "🔥 每日飲食打卡與減脂儀表板":
                 "選擇食品", filtered_cat_df["name"].tolist()
             )
             consume_weight = st.number_input("食用克數/毫升", value=100.0)
-            if st.form_submit_button("確認打卡並扣庫存"):
+            if st.form_submit_button("確認打卡並計入營養素"):
               f_row = cat_df[cat_df["name"] == selected_food_name].iloc[0]
               ratio = consume_weight / 100.0
               conn = sqlite3.connect("pantry.db")
@@ -838,7 +933,9 @@ elif menu == "📦 庫存與批次總覽 (含海外代購與PAO)":
     st.info("目前庫存無資料。")
   else:
     df["效期狀態"] = df.apply(
-        lambda row: check_expiry(row["有效期限"], row["開封日期"], row["PAO月數"], row["狀態"]),
+        lambda row: check_expiry(
+            row["有效期限"], row["開封日期"], row["PAO月數"], row["狀態"]
+        ),
         axis=1,
     )
     st.dataframe(df, use_container_width=True)
@@ -864,34 +961,48 @@ elif menu == "🧴 晨間 (AM) 與夜間 (PM) 保養 Routine 推薦":
     routine_df = pd.DataFrame()
 
   if routine_df.empty:
-    st.info("目前庫存中沒有找到庫存充足的保養品！請先至「新增購買批次」入庫您的保養品。")
+    st.info(
+        "目前庫存中沒有找到庫存充足的保養品！請先至「新增購買批次」入庫您的保養品。"
+    )
   else:
     tab_am, tab_pm = st.tabs(["☀️ 晨間保養清單 (AM)", "🌙 夜間保養清單 (PM)"])
 
     with tab_am:
-      am_items = routine_df[routine_df["routine_time"].isin(["早安 AM", "早晚皆可"])]
+      am_items = routine_df[
+          routine_df["routine_time"].isin(["早安 AM", "早晚皆可"])
+      ]
       if am_items.empty:
         st.info("目前沒有設定晨間保養品。")
       else:
         for idx, row in am_items.iterrows():
           with st.container():
-            st.markdown(f"### 步驟 {row['routine_order']}：{row['name']} ({row['brand']})")
+            st.markdown(
+                f"### 步驟 {row['routine_order']}：{row['name']} ({row['brand']})"
+            )
             if row["foreign_name"]:
               st.caption(f"外文名：{row['foreign_name']}")
-            st.info(f"💡 **使用方法**：{row['usage_instructions'] or '無特別說明'}")
+            st.info(
+                f"💡 **使用方法**：{row['usage_instructions'] or '無特別說明'}"
+            )
             st.markdown("---")
 
     with tab_pm:
-      pm_items = routine_df[routine_df["routine_time"].isin(["晚安 PM", "早晚皆可"])]
+      pm_items = routine_df[
+          routine_df["routine_time"].isin(["晚安 PM", "早晚皆可"])
+      ]
       if pm_items.empty:
         st.info("目前沒有設定夜間保養品。")
       else:
         for idx, row in pm_items.iterrows():
           with st.container():
-            st.markdown(f"### 步驟 {row['routine_order']}：{row['name']} ({row['brand']})")
+            st.markdown(
+                f"### 步驟 {row['routine_order']}：{row['name']} ({row['brand']})"
+            )
             if row["foreign_name"]:
               st.caption(f"外文名：{row['foreign_name']}")
-            st.info(f"💡 **使用方法**：{row['usage_instructions'] or '無特別說明'}")
+            st.info(
+                f"💡 **使用方法**：{row['usage_instructions'] or '無特別說明'}"
+            )
             st.markdown("---")
 
 
@@ -905,10 +1016,13 @@ elif menu == "🏷️ 商品與保養品主檔管理":
       c1, c2 = st.columns(2)
       with c1:
         name = st.text_input("中文品名 * (例如：SK-II 青春露)")
-        barcode = st.text_input("商品條碼編號 (Barcode，例如：49790060... 或用手機掃描)")
+        barcode = st.text_input(
+            "商品條碼編號 (Barcode，例如：49790060... 或用手機掃描)"
+        )
         foreign_name = st.text_input("外文原名 / 日文原名")
         origin_country = st.selectbox(
-            "原產國", ["台灣", "日本", "韓國", "美國", "泰國", "歐洲", "中國大陸", "其他"]
+            "原產國",
+            ["台灣", "日本", "韓國", "美國", "泰國", "歐洲", "中國大陸", "其他"],
         )
         brand = st.text_input("品牌")
       with c2:
@@ -926,16 +1040,31 @@ elif menu == "🏷️ 商品與保養品主檔管理":
       st.markdown("---")
       st.markdown("**🧴 保養品專屬進階設定 (非保養品可忽略)**")
       c_rt1, c_rt2, c_rt3, c_rt4 = st.columns(4)
-      routine_time = c_rt1.selectbox("保養時段", ["早安 AM", "晚安 PM", "早晚皆可"])
-      routine_order = c_rt2.number_input("保養步驟順序", min_value=1, max_value=20, value=1)
-      skin_type = c_rt3.selectbox("適用膚質", ["所有膚質", "油肌", "乾肌", "混合肌", "敏感肌"])
-      season = c_rt4.selectbox("適用季節", ["全年適用", "春季", "夏季", "秋季", "冬季"])
+      routine_time = c_rt1.selectbox(
+          "保養時段", ["早安 AM", "晚安 PM", "早晚皆可"]
+      )
+      routine_order = c_rt2.number_input(
+          "保養步驟順序", min_value=1, max_value=20, value=1
+      )
+      skin_type = c_rt3.selectbox(
+          "適用膚質", ["所有膚質", "油肌", "乾肌", "混合肌", "敏感肌"]
+      )
+      season = c_rt4.selectbox(
+          "適用季節", ["全年適用", "春季", "夏季", "秋季", "冬季"]
+      )
 
       usage_instructions = st.text_area(
           "💡 使用方法 / 步驟說明 (例如：早晚清潔後，取適量於化妝棉輕拍全臉)"
       )
 
-      calories, protein, fat, carbs, sugar, sodium = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+      calories, protein, fat, carbs, sugar, sodium = (
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+      )
       if item_type == "食品":
         st.markdown("**營養標示 (每 100g / 100ml)**")
         c3, c4, c5, c6, c7, c8 = st.columns(6)
@@ -1011,7 +1140,10 @@ elif menu == "🏷️ 商品與保養品主檔管理":
       r_sel = cat_df[cat_df["id"] == sel_id].iloc[0]
       with st.form("edit_cat"):
         en = st.text_input("中文品名", value=r_sel["name"])
-        ebc = st.text_input("條碼編號 (Barcode)", value=str(r_sel["barcode"]) if pd.notna(r_sel["barcode"]) else "")
+        ebc = st.text_input(
+            "條碼編號 (Barcode)",
+            value=str(r_sel["barcode"]) if pd.notna(r_sel["barcode"]) else "",
+        )
         efn = st.text_input(
             "外文原名",
             value=str(r_sel["foreign_name"])
@@ -1019,7 +1151,8 @@ elif menu == "🏷️ 商品與保養品主檔管理":
             else "",
         )
         eb = st.text_input(
-            "品牌", value=str(r_sel["brand"]) if pd.notna(r_sel["brand"]) else ""
+            "品牌",
+            value=str(r_sel["brand"]) if pd.notna(r_sel["brand"]) else "",
         )
         ei = st.text_area(
             "成分",
@@ -1049,16 +1182,19 @@ elif menu == "🏷️ 商品與保養品主檔管理":
 # --- 功能六：條碼掃描快速入庫 / 查詢 ---
 elif menu == "📷 條碼掃描快速入庫 / 查詢":
   st.header("📷 商品條碼快速掃描與入庫查詢")
-  st.info("💡 您可以使用手機鏡頭拍照上傳商品條碼照片，或是直接輸入條碼編號快速進行商品識別與入庫！")
+  st.info(
+      "💡 您可以使用手機鏡頭拍照上傳商品條碼照片，或是直接輸入條碼編號快速進行商品識別與入庫！"
+  )
 
   scan_tab1, scan_tab2 = st.tabs(["📸 拍照/上傳條碼快速搜尋", "⌨️ 輸入條碼代碼查詢"])
 
   with scan_tab1:
-    barcode_img = st.file_uploader("拍下商品條碼或上傳條碼圖片", type=["jpg", "jpeg", "png"])
+    barcode_img = st.file_uploader(
+        "拍下商品條碼或上傳條碼圖片", type=["jpg", "jpeg", "png"]
+    )
     if barcode_img is not None:
       st.image(barcode_img, caption="已上傳的條碼照片", width=300)
       st.success("✅ 圖片上傳成功！(模擬條碼解析中...)")
-      # 這裡可以整合條碼解析，若資料庫有對應條碼則秀出
       try:
         conn = sqlite3.connect("pantry.db")
         cat_df = pd.read_sql_query("SELECT * FROM food_catalog", conn)
@@ -1067,13 +1203,20 @@ elif menu == "📷 條碼掃描快速入庫 / 查詢":
         cat_df = pd.DataFrame()
 
       if not cat_df.empty:
-        matched_items = cat_df[cat_df["barcode"].notna() & (cat_df["barcode"] != "")]
+        matched_items = cat_df[
+            cat_df["barcode"].notna() & (cat_df["barcode"] != "")
+        ]
         if not matched_items.empty:
           st.subheader("🎯 找到以下對應商品：")
           for idx, row in matched_items.iterrows():
-            st.markdown(f"**品名：** {row['name']} | **品牌：** {row['brand']} | **類型：** {row['item_type']}")
+            st.markdown(
+                f"**品名：** {row['name']} | **品牌：** {row['brand']} |"
+                f" **類型：** {row['item_type']}"
+            )
         else:
-          st.warning("⚠️ 目前主檔中尚無登記條碼的商品。您可以手動輸入條碼或至【商品主檔管理】補填條碼！")
+          st.warning(
+              "⚠️ 目前主檔中尚無登記條碼的商品。您可以手動輸入條碼或至【商品主檔管理】補填條碼！"
+          )
 
   with scan_tab2:
     with st.form("manual_barcode_form"):
@@ -1084,11 +1227,14 @@ elif menu == "📷 條碼掃描快速入庫 / 查詢":
           try:
             conn = sqlite3.connect("pantry.db")
             c = conn.cursor()
-            c.execute("SELECT * FROM food_catalog WHERE barcode = ?", (input_code.strip(),))
+            c.execute(
+                "SELECT * FROM food_catalog WHERE barcode = ?",
+                (input_code.strip(),),
+            )
             res = c.fetchone()
             conn.close()
             if res:
-              st.success(f"🎉 找到對應商品：【{res[1]}】(品牌: {res[4]})")
+              st.success(f"🎉 找到對應商品：【{res[1]}】(品牌: {res[4]})$")
             else:
               st.error("❌ 找不到此條碼對應的商品，請先至主檔建立！")
           except Exception as e:
@@ -1118,7 +1264,9 @@ elif menu == "🧪 保養品/商品使用心得與實驗筆記 (含照片)":
   except Exception:
     cat_df, reviews_df = pd.DataFrame(), pd.DataFrame()
 
-  tab_rev_add, tab_rev_list = st.tabs(["✍️ 新增心得與膚況照片", "📖 查看所有心得與紀錄"])
+  tab_rev_add, tab_rev_list = st.tabs(
+      ["✍️ 新增心得與膚況照片", "📖 查看所有心得與紀錄"]
+  )
 
   with tab_rev_add:
     if cat_df.empty:
@@ -1145,7 +1293,8 @@ elif menu == "🧪 保養品/商品使用心得與實驗筆記 (含照片)":
               "綜合評分 (⭐ 蜜糖到 💩 毒藥)", min_value=1, max_value=5, value=4
           )
           re_buy_intent = st.selectbox(
-              "回購意願", ["🔥 必回購 (蜜糖)", "🤔 觀望中", "❌ 絕不回購 (毒藥/踩雷)"]
+              "回購意願",
+              ["🔥 必回購 (蜜糖)", "🤔 觀望中", "❌ 絕不回購 (毒藥/踩雷)"],
           )
           texture_feel = st.text_input(
               "質地與吸收感受 (例如：質地清爽水潤、吸收快)"
@@ -1157,7 +1306,9 @@ elif menu == "🧪 保養品/商品使用心得與實驗筆記 (含照片)":
           side_effects = st.text_input("不良反應/副作用 (例如：無過敏)")
 
         notes = st.text_area("詳細實驗心得筆記")
-        uploaded_file = st.file_uploader("📸 上傳膚況對比照 / 使用前後照片", type=["jpg", "jpeg", "png"])
+        uploaded_file = st.file_uploader(
+            "📸 上傳膚況對比照 / 使用前後照片", type=["jpg", "jpeg", "png"]
+        )
 
         if st.form_submit_button("儲存心得筆記"):
           p_id = selected_prod_row["id"]
@@ -1200,7 +1351,10 @@ elif menu == "🧪 保養品/商品使用心得與實驗筆記 (含照片)":
       st.info("目前還沒有任何使用心得筆記。")
     else:
       for idx, row in reviews_df.iterrows():
-        with st.expander(f"⭐ {row['rating']}分 | {row['product_name']} ({row['user_name']} - {row['review_date']})"):
+        with st.expander(
+            f"⭐ {row['rating']}分 | {row['product_name']} ({row['user_name']}"
+            f" - {row['review_date']})"
+        ):
           st.markdown(f"**回購意願：** {row['re_buy_intent']}")
           st.markdown(f"**質地感受：** {row['texture_feel']}")
           st.markdown(f"**使用效果：** {row['effectiveness']}")
@@ -1240,14 +1394,18 @@ elif menu == "📥 新增購買批次 (快速入庫)":
       with col_imp1:
         is_imported_chk = st.checkbox("✈️ 海外代購 / 國外購入", value=False)
       with col_imp2:
-        foreign_price_input = st.text_input("外幣價格備註 (例如：￥4,500)", value="")
+        foreign_price_input = st.text_input(
+            "外幣價格備註 (例如：￥4,500)", value=""
+        )
 
       col1, col2 = st.columns(2)
       with col1:
         channel = st.text_input("購買管道 (例如：日本藥妝店、專櫃)")
         weight = st.number_input("總容量/數量 (g, ml 或 件)", value=1.0)
       with col2:
-        price = st.number_input("台幣結帳金額 (NT$，不記得可填 0)", min_value=0.0)
+        price = st.number_input(
+            "台幣結帳金額 (NT$，不記得可填 0)", min_value=0.0
+        )
         discount_info = st.text_input("優惠備註")
 
       col3, col4, col5 = st.columns(3)
@@ -1261,8 +1419,15 @@ elif menu == "📥 新增購買批次 (快速入庫)":
       st.markdown("---")
       st.markdown("**🧴 開封後效期 (PAO) 設定**")
       c_pao1, c_pao2 = st.columns(2)
-      opened_date = c_pao1.date_input("實際開封日期 (若狀態為已開封)", datetime.date.today())
-      pao_months = c_pao2.number_input("PAO 開封後有效月數 (例如罐子寫 12M 填 12)", min_value=1, max_value=60, value=12)
+      opened_date = c_pao1.date_input(
+          "實際開封日期 (若狀態為已開封)", datetime.date.today()
+      )
+      pao_months = c_pao2.number_input(
+          "PAO 開封後有效月數 (例如罐子寫 12M 填 12)",
+          min_value=1,
+          max_value=60,
+          value=12,
+      )
 
       if st.form_submit_button("確認入庫"):
         try:
@@ -1330,7 +1495,8 @@ elif menu == "📋 菜單、烹飪與冰箱推薦":
         conn = sqlite3.connect("pantry.db")
         c = conn.cursor()
         c.execute(
-            "INSERT INTO recipes (title, ingredients_detail, instructions) VALUES (?, ?, ?)",
+            "INSERT INTO recipes (title, ingredients_detail, instructions)"
+            " VALUES (?, ?, ?)",
             (rtitle, ",".join(ingredient_inputs), rinst),
         )
         conn.commit()
